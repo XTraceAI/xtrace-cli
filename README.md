@@ -27,9 +27,21 @@ be overridden per-invocation by an environment variable:
 `XTRACE_API_KEY`, `XTRACE_BASE_URL`, `XTRACE_USER_ID`, `XTRACE_AGENT_ID`,
 `XTRACE_APP_ID`, `XTRACE_NAMESPACE`. The org is derived from the key server-side.
 
+## Hermes integration
+
+```bash
+xmem hermes sessions                       # list recent hermes-agent sessions (~/.hermes/state.db)
+xmem hermes ingest --latest --dry-run      # preview what a session would ingest
+xmem hermes ingest --session <id> --namespace <repo>   # ingest via the agentic path
+```
+
+Reads Hermes' local SQLite store directly (no hermes install needed). `--db` points
+at a non-default `state.db`; `--no-tools` / `--include-system` tune which turns go in.
+
 ## Status
 
 - **M1 (done):** API client (`client.py`, all 8 endpoints) + config + `xmem config set`.
-- **M2:** the 8 memory subcommands (`ingest`, `search`, `recall`, `list`, `get`, `delete`, `job`).
-- **M3–M4:** Hermes session ingest + recall/search glue.
+- **M2 (done):** the 8 memory subcommands (`ingest`, `search`, `recall`, `list`, `get`, `delete`, `job`).
+- **M3 (done):** Hermes session ingest — `xmem hermes sessions|ingest`.
+- **M4:** Hermes pre-tool-call recall + in-loop search wiring (skill/toolset docs).
 - **M5:** packaging + customer runbook.

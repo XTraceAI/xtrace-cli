@@ -387,5 +387,13 @@ def delete(
         typer.secho(f"deleted {memory_id}", fg=typer.colors.GREEN)
 
 
+# Per-agent integrations register their own subcommand groups. Imported last so
+# the module's helpers (get_client, _pick, _poll_job) are fully defined first —
+# the integration imports them lazily inside its command bodies.
+from .integrations.hermes.cli import hermes_app  # noqa: E402
+
+app.add_typer(hermes_app, name="hermes")
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(app())
