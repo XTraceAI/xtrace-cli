@@ -1,0 +1,29 @@
+[project]
+name = "xtrace-cli"
+version = "0.1.0"
+description = "xmem — a scriptable CLI for XTrace hosted memory (/v1/memories). Agent-agnostic; first integration: Nous Research hermes-agent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "XTrace" }]
+dependencies = [
+    "typer>=0.12",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+xmem = "xtrace_cli.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-httpx>=0.30", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["xtrace_cli"]
+
+[tool.ruff]
+line-length = 100

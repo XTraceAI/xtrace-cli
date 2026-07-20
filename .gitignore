@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+# venv / tooling
+.venv/
+.uv/
+# note: uv.lock IS committed for reproducibility (application, not a library)
+# local secrets / config
+.env
+config.yaml
+# test / cache
+.pytest_cache/
+.ruff_cache/
