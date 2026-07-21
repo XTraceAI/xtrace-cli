@@ -12,8 +12,12 @@ See the spec: [`docs/specs/xtrace-cli.md`](docs/specs/xtrace-cli.md).
 ## Install
 
 ```bash
-uv sync              # or: pip install -e .
+pip install "xtrace-cli @ git+https://github.com/XTraceAI/xtrace-cli.git"
+# or, for local dev:  uv sync   /   pip install -e .
 ```
+
+**Deploying with hermes-agent?** Follow the end-to-end runbook:
+[`docs/deploy-hermes.md`](docs/deploy-hermes.md).
 
 ## Configure
 
@@ -52,4 +56,4 @@ alternatives).
 - **M2 (done):** the 8 memory subcommands (`ingest`, `search`, `recall`, `list`, `get`, `delete`, `job`).
 - **M3 (done):** Hermes session ingest — `xmem hermes sessions|ingest`.
 - **M4 (done):** Hermes plugin (`xmem_search` + `xmem_recall` tools) + skill + `install-plugin`.
-- **M5:** packaging + customer runbook.
+- **M5 (done):** packaging (pip-installable wheel, bundled plugin data) + [deploy runbook](docs/deploy-hermes.md).

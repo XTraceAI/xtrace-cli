@@ -1,0 +1,17 @@
+# Example xtrace-cli config.
+#
+# Copy to ~/.config/xtrace-cli/config.yaml (the file is written 0600 because it
+# holds the API key), or set values with `xmem config set …`. Every field can be
+# overridden per-invocation by an env var — XTRACE_BASE_URL, XTRACE_API_KEY,
+# XTRACE_USER_ID, XTRACE_AGENT_ID, XTRACE_APP_ID, XTRACE_NAMESPACE.
+#
+# The org is derived server-side from the key — do NOT send an org id.
+
+base_url: https://api.staging.xtrace.ai      # memory API base URL
+api_key: xtk_replace_me                      # org API key (starts with xtk_)
+user_id: alice                               # default user scope
+namespace: my-repo                           # default working context (repo / customer / service)
+
+# Optional extra scope axes (usually left unset):
+# agent_id: bot-7
+# app_id: my-app
