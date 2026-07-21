@@ -1,0 +1,7 @@
+name: xmem
+version: 0.1.0
+description: >-
+  XTrace hosted memory for Hermes — adds xmem_search (semantic memory search)
+  and xmem_recall (procedural-memory / directive recall) tools that shell out
+  to the xmem CLI. Pairs with `xmem hermes ingest` for session capture.
+author: XTrace

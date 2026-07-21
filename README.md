@@ -30,18 +30,26 @@ be overridden per-invocation by an environment variable:
 ## Hermes integration
 
 ```bash
-xmem hermes sessions                       # list recent hermes-agent sessions (~/.hermes/state.db)
+# Capture: ingest a finished session
+xmem hermes sessions                       # list recent sessions (~/.hermes/state.db)
 xmem hermes ingest --latest --dry-run      # preview what a session would ingest
 xmem hermes ingest --session <id> --namespace <repo>   # ingest via the agentic path
+
+# In-loop: install the plugin (xmem_search + xmem_recall tools + skill)
+xmem hermes install-plugin                 # → ~/.hermes/plugins/xmem/ (auto-discovered)
 ```
 
-Reads Hermes' local SQLite store directly (no hermes install needed). `--db` points
-at a non-default `state.db`; `--no-tools` / `--include-system` tune which turns go in.
+Ingest reads Hermes' local SQLite store directly (no hermes install needed).
+The plugin's tool handlers shell out to `xmem`, so the agent can search memory
+and recall directives mid-run. See
+[`xtrace_cli/integrations/hermes/README.md`](xtrace_cli/integrations/hermes/README.md)
+for the full wiring guide (plugin, skill, and the MemoryProvider / middleware / MCP
+alternatives).
 
 ## Status
 
 - **M1 (done):** API client (`client.py`, all 8 endpoints) + config + `xmem config set`.
 - **M2 (done):** the 8 memory subcommands (`ingest`, `search`, `recall`, `list`, `get`, `delete`, `job`).
 - **M3 (done):** Hermes session ingest — `xmem hermes sessions|ingest`.
-- **M4:** Hermes pre-tool-call recall + in-loop search wiring (skill/toolset docs).
+- **M4 (done):** Hermes plugin (`xmem_search` + `xmem_recall` tools) + skill + `install-plugin`.
 - **M5:** packaging + customer runbook.

@@ -7,6 +7,7 @@ bodies to avoid an import cycle with ``xtrace_cli.cli``.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,10 @@ from xtrace_cli import output
 from xtrace_cli.config import Config
 
 from . import session_ingest as si
+
+_HERE = Path(__file__).parent
+_BUNDLED_PLUGIN = _HERE / "hermes_plugin"
+_BUNDLED_SKILL = _HERE / "skill"
 
 hermes_app = typer.Typer(help="Nous Research hermes-agent integration.", no_args_is_help=True)
 
@@ -128,6 +133,46 @@ def ingest(
     else:
         typer.echo(f"session {info.id} → {len(messages)} turns (agentic={agentic}, namespace={ns or '-'})")
         output.render_ingest(res)
+
+
+@hermes_app.command("install-plugin")
+def install_plugin(
+    dest: Optional[Path] = typer.Option(None, "--dest", help="Plugins dir (default ~/.hermes/plugins)."),
+    skills_dir: Optional[Path] = typer.Option(None, "--skills-dir", help="Skills dir (default ~/.hermes/skills)."),
+    with_skill: bool = typer.Option(True, "--with-skill/--no-skill", help="Also install the xmem-memory skill."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing install."),
+) -> None:
+    """Install the xmem Hermes plugin (xmem_search + xmem_recall tools).
+
+    Copies the bundled plugin to ``~/.hermes/plugins/xmem/`` (auto-discovered by
+    Hermes) and, unless ``--no-skill``, the xmem-memory skill to
+    ``~/.hermes/skills/xmem/``. Requires the ``xmem`` CLI on PATH and a
+    configured key.
+    """
+    home = si.hermes_home()
+    plugin_target = (dest or home / "plugins") / "xmem"
+    _copy_tree(_BUNDLED_PLUGIN, plugin_target, force, label="plugin")
+
+    if with_skill:
+        skill_target = (skills_dir or home / "skills") / "xmem"
+        _copy_tree(_BUNDLED_SKILL, skill_target, force, label="skill")
+
+    typer.secho(f"Installed xmem plugin → {plugin_target}", fg=typer.colors.GREEN)
+    typer.echo("Hermes auto-discovers plugins under ~/.hermes/plugins on next start.")
+    typer.echo("Ensure the `xmem` CLI is on PATH and `xmem config set --api-key <xtk_…>` is done.")
+
+
+def _copy_tree(src: Path, target: Path, force: bool, *, label: str) -> None:
+    if not src.is_dir():
+        typer.secho(f"bundled {label} not found at {src}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if target.exists():
+        if not force:
+            typer.secho(f"{target} exists — pass --force to overwrite.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
 def _print_dry_run(info, messages, uid, cid, ns, agentic, as_json) -> None:
