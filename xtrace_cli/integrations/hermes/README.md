@@ -34,7 +34,7 @@ xmem hermes install-plugin        # → ~/.hermes/plugins/xmem/ (+ skill)
 
 Hermes auto-discovers plugins under `~/.hermes/plugins/` on next start
 (`hermes_cli/plugins.py`). The handlers shell out to the `xmem` CLI, so the
-plugin has no Python dependency on this package. The installed **xmem-memory
+plugin has no Python dependency on this package. The installed **xtrace-memory
 skill** nudges the model to call `xmem_recall` before risky tool actions and
 `xmem_search` when it needs context.
 

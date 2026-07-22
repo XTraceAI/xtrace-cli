@@ -1,5 +1,5 @@
 ---
-name: xmem-memory
+name: xtrace-memory
 description: |
   Use XTrace long-term memory. Call xmem_search to pull relevant facts and
   past decisions when you lack context, and call xmem_recall BEFORE a risky

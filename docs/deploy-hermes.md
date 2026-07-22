@@ -77,7 +77,7 @@ The agent now has:
 - **`xmem_recall(tool, file?, entities?, task?)`** — surface procedural
   directives *before* a risky tool action.
 
-The bundled `xmem-memory` skill tells the model when to call them. Both handlers
+The bundled `xtrace-memory` skill tells the model when to call them. Both handlers
 shell out to `xmem`, so the plugin needs the CLI on PATH and a configured key
 (step 2). See `xtrace_cli/integrations/hermes/README.md` for the MemoryProvider /
 middleware / MCP alternatives.

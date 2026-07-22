@@ -139,13 +139,13 @@ def ingest(
 def install_plugin(
     dest: Optional[Path] = typer.Option(None, "--dest", help="Plugins dir (default ~/.hermes/plugins)."),
     skills_dir: Optional[Path] = typer.Option(None, "--skills-dir", help="Skills dir (default ~/.hermes/skills)."),
-    with_skill: bool = typer.Option(True, "--with-skill/--no-skill", help="Also install the xmem-memory skill."),
+    with_skill: bool = typer.Option(True, "--with-skill/--no-skill", help="Also install the xtrace-memory skill."),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing install."),
 ) -> None:
     """Install the xmem Hermes plugin (xmem_search + xmem_recall tools).
 
     Copies the bundled plugin to ``~/.hermes/plugins/xmem/`` (auto-discovered by
-    Hermes) and, unless ``--no-skill``, the xmem-memory skill to
+    Hermes) and, unless ``--no-skill``, the xtrace-memory skill to
     ``~/.hermes/skills/xmem/``. Requires the ``xmem`` CLI on PATH and a
     configured key.
     """
