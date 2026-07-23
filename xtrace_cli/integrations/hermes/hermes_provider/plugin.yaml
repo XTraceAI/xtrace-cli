@@ -1,5 +1,5 @@
 name: xtrace
-version: 0.1.0
+version: 0.2.1
 # Memory providers are "exclusive": loaded by hermes' plugins/memory discovery
 # when selected via `memory.provider: xtrace`, not by the general plugin loader.
 kind: exclusive

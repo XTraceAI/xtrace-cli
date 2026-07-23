@@ -19,6 +19,8 @@ live under ``memory.xtrace`` in config.yaml:
 - ``prefetch`` (default true)         — inject recalled context each turn
 - ``prefetch_mode`` (default retrieve) — ``retrieve`` (fast) or ``compose``
 - ``auto_ingest`` (default true)      — flush transcripts at session boundaries
+- ``include_tools`` (default false)   — also ingest tool calls/results (opt in;
+  tool output often carries secrets, but it is where procedural lessons live)
 - ``namespace`` (default unset)       — override the xmem config namespace
 """
 
@@ -142,12 +144,18 @@ class XTraceMemoryProvider(MemoryProvider):
         self._prefetch_enabled = _coerce_bool(cfg.get("prefetch"), True)
         self._prefetch_mode = str(cfg.get("prefetch_mode") or "retrieve")
         self._auto_ingest = _coerce_bool(cfg.get("auto_ingest"), True)
+        # Off by default since 0.2.1: tool output often carries secrets/PII.
+        # Opt in (memory.xtrace.include_tools: true) for procedural recall depth.
+        self._include_tools = _coerce_bool(cfg.get("include_tools"), False)
         namespace = str(cfg.get("namespace") or "") or None
         self._core = core or core_mod.ProviderCore(namespace=namespace)
         self._session_id = ""
         self._writes_enabled = True
         self._lock = threading.Lock()
-        self._messages: Optional[List[Dict[str, Any]]] = None  # latest snapshot
+        # Transcript snapshots keyed by session id — one provider instance may
+        # serve several concurrent sessions (gateway group chats, cached
+        # agents), and Hermes passes session_id per call for exactly that.
+        self._snapshots: Dict[str, List[Dict[str, Any]]] = {}
         self._bg_threads: list[threading.Thread] = []
 
     # ── identity / availability ─────────────────────────────────────────
@@ -200,23 +208,50 @@ class XTraceMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Keep the latest transcript snapshot; boundary hooks flush it. No
-        network here — sync_turn must stay cheap."""
-        if messages:
+        """Keep the latest transcript snapshot per session; boundary hooks
+        flush them. No network here — sync_turn must stay cheap."""
+        if not messages:
+            return
+        sid = session_id or self._session_id
+        if not sid:
+            return
+        with self._lock:
+            self._snapshots[sid] = list(messages)
+            # Bound growth for long-lived gateway processes with abandoned
+            # sessions: evict oldest-inserted (its only loss is the crash-path
+            # safety net; session-end/switch flushes pop entries normally).
+            while len(self._snapshots) > 128:
+                self._snapshots.pop(next(iter(self._snapshots)))
+
+    def _owning_sid(self, messages: List[Dict[str, Any]]) -> str:
+        """Which session does this transcript belong to? on_session_end and
+        on_pre_compress carry no session_id, so match the transcript's opening
+        turns against stored snapshots (both hand us lists that start at the
+        conversation head). Unique match wins; anything else falls back to
+        this agent's current session."""
+        head = [(m.get("role"), m.get("content")) for m in messages[:2] if isinstance(m, dict)]
+        if head:
             with self._lock:
-                self._messages = list(messages)
+                matches = {
+                    sid for sid, snap in self._snapshots.items()
+                    if [(m.get("role"), m.get("content")) for m in snap[:2]] == head
+                }
+            if len(matches) == 1:
+                return matches.pop()
+        return self._session_id
 
     # ── capture (the reason the provider exists) ─────────────────────────
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        self._flush(messages, self._session_id, wait=True)
+        sid = self._owning_sid(messages)
+        self._flush(messages, sid, wait=True)
         with self._lock:
-            self._messages = None
+            self._snapshots.pop(sid, None)
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         # Capture turns about to be discarded by compression. Same conv_id as
         # the eventual session-end flush — the ingest path is idempotent per
         # conv_id, so this is an early partial save, not a duplicate.
-        self._flush(messages, self._session_id, wait=False)
+        self._flush(messages, self._owning_sid(messages), wait=False)
         return ""
 
     def on_session_switch(
@@ -231,11 +266,14 @@ class XTraceMemoryProvider(MemoryProvider):
         old_id = self._session_id
         if rewound and not reset:
             # Same session, truncated transcript — forget the fingerprint so
-            # the next flush re-ingests the rewritten conversation.
+            # the next flush re-ingests the rewritten conversation, and drop
+            # the now-stale snapshot.
             self._core.invalidate(old_id)
+            with self._lock:
+                self._snapshots.pop(old_id, None)
             return
         with self._lock:
-            snapshot, self._messages = self._messages, None
+            snapshot = self._snapshots.pop(old_id, None)
         if snapshot and old_id and old_id != new_session_id:
             # The old conversation is being left behind — flush it under its
             # own id (captured NOW, not read from self inside the thread).
@@ -244,11 +282,13 @@ class XTraceMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         with self._lock:
-            snapshot = self._messages
-        if snapshot:
-            # Crash-path safety net; the fingerprint makes this a no-op when
-            # on_session_end already flushed the same transcript.
-            self._flush(snapshot, self._session_id, wait=True)
+            remaining = list(self._snapshots.items())
+            self._snapshots.clear()
+        for sid, snapshot in remaining:
+            # Crash-path safety net, one flush per still-open session; the
+            # fingerprint makes each a no-op when on_session_end already
+            # flushed the same transcript.
+            self._flush(snapshot, sid, wait=True)
         for t in self._bg_threads:
             if t.is_alive():
                 t.join(timeout=5.0)
@@ -259,9 +299,10 @@ class XTraceMemoryProvider(MemoryProvider):
         if not messages or not conv_id:
             return
         msgs = list(messages)
+        include_tools = self._include_tools
 
         def work() -> None:
-            ok, detail = self._core.ingest(msgs, conv_id)
+            ok, detail = self._core.ingest(msgs, conv_id, include_tools=include_tools)
             log = logger.info if ok else logger.warning
             log("xtrace ingest (%s): %s", conv_id, detail)
 

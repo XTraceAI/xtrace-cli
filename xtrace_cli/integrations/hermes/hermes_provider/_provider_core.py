@@ -105,6 +105,10 @@ def map_messages(
             continue
         text = _content_text(m.get("content"))
         if role == "assistant" and not text and m.get("tool_calls"):
+            if not include_tools:
+                # include_tools=False means NO tool activity leaves the box —
+                # invocation args can carry secrets as easily as results.
+                continue
             text = _render_tool_calls(m.get("tool_calls"))
         if role == "tool" and text:
             tool_name = m.get("name") or m.get("tool_name")
@@ -218,6 +222,7 @@ class ProviderCore:
         conv_id: str,
         *,
         include_system: bool = False,
+        include_tools: bool = True,
     ) -> tuple[bool, str]:
         """Map and POST a transcript under ``conv_id``. Returns (ok, detail).
 
@@ -227,7 +232,9 @@ class ProviderCore:
         """
         if not conv_id:
             return False, "no conv_id"
-        mapped = map_messages(messages, include_system=include_system)
+        mapped = map_messages(
+            messages, include_system=include_system, include_tools=include_tools,
+        )
         if not mapped:
             return True, "nothing to ingest"
         fp = _fingerprint(mapped)

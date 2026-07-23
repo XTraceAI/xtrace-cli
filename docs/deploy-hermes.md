@@ -119,8 +119,10 @@ What changes vs. the plugin:
 
 Optional knobs under `memory.xtrace:` — `prefetch: false` (tools only),
 `prefetch_mode: compose` (richer, slower than the default `retrieve`),
-`auto_ingest: false` (recall only), `namespace: <ctx>` (override the xmem
-config default).
+`auto_ingest: false` (recall only), `include_tools: true` (also capture tool
+calls/results — **off by default** since 0.2.1 because tool I/O often carries
+secrets; opt in for deeper procedural recall), `namespace: <ctx>` (override
+the xmem config default).
 
 ## 5. Verify the loop
 

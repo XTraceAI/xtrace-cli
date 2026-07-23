@@ -73,7 +73,8 @@ Ingest is idempotent per `conv_id` (= the Hermes session id) with a
 fingerprint guard, so boundary flushes never double-post an unchanged
 transcript. Handlers shell out to `xmem` — same zero-dependency install story
 as the plugin. Knobs under `memory.xtrace:` in config.yaml — `prefetch`,
-`prefetch_mode`, `auto_ingest`, `namespace`.
+`prefetch_mode`, `auto_ingest`, `include_tools` (default **off**: tool I/O
+often carries secrets; opt in for procedural depth), `namespace`.
 
 Trade-off: the external-provider slot is **exclusive** — pick this mode when
 XTrace is the memory backend; pick the additive plugin to coexist with another

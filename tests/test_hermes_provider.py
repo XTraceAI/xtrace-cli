@@ -287,6 +287,117 @@ def test_auto_ingest_off_disables_capture():
     assert fr.calls == []
 
 
+# ── provider: concurrent sessions (gateway) ──────────────────────────────
+A_TURNS = [
+    {"role": "user", "content": "customer refund for order 123"},
+    {"role": "assistant", "content": "processing the refund"},
+]
+B_TURNS = [
+    {"role": "user", "content": "question about my salary"},
+    {"role": "assistant", "content": "let me check"},
+]
+
+
+def _conv_of(call):
+    cmd = call[0]
+    return cmd[cmd.index("--conv-id") + 1]
+
+
+def test_interleaved_sessions_never_mix_labels():
+    """The Alice/Bob scenario: B's flush must be labeled B even when the
+    provider's 'current' session is A."""
+    p, fr = _provider()
+    p.initialize("A")
+    p.sync_turn("u", "a", session_id="A", messages=A_TURNS)
+    p.sync_turn("u", "a", session_id="B", messages=B_TURNS)
+    p.on_pre_compress(B_TURNS)          # carries no session_id
+    _join_bg(p)
+    assert _conv_of(fr.calls[0]) == "B"
+    p.on_session_end(A_TURNS)           # ends while _session_id is still "A"
+    assert _conv_of(fr.calls[1]) == "A"
+
+
+def test_session_end_matches_owner_not_current():
+    p, fr = _provider()
+    p.initialize("A")
+    p.sync_turn("u", "a", session_id="A", messages=A_TURNS)
+    p.sync_turn("u", "a", session_id="B", messages=B_TURNS)
+    p.on_session_end(B_TURNS)
+    assert _conv_of(fr.calls[0]) == "B"
+
+
+def test_owner_match_falls_back_to_current_session():
+    p, fr = _provider()
+    p.initialize("sess-1")
+    p.on_session_end(TURNS)  # no snapshots stored at all
+    assert _conv_of(fr.calls[0]) == "sess-1"
+    # Ambiguous head (two sessions with identical openings) → fallback too.
+    p2, fr2 = _provider()
+    p2.initialize("X")
+    p2.sync_turn("u", "a", session_id="X", messages=A_TURNS)
+    p2.sync_turn("u", "a", session_id="Y", messages=list(A_TURNS))
+    p2.on_session_end(A_TURNS)
+    assert _conv_of(fr2.calls[0]) == "X"
+
+
+def test_shutdown_flushes_every_open_session():
+    p, fr = _provider()
+    p.initialize("A")
+    p.sync_turn("u", "a", session_id="A", messages=A_TURNS)
+    p.sync_turn("u", "a", session_id="B", messages=B_TURNS)
+    p.shutdown()
+    assert {_conv_of(c) for c in fr.calls} == {"A", "B"}
+
+
+def test_snapshot_store_is_bounded():
+    p, _ = _provider()
+    p.initialize("s0")
+    for i in range(200):
+        p.sync_turn("u", "a", session_id=f"s{i}", messages=TURNS)
+    assert len(p._snapshots) <= 128
+
+
+# ── provider: include_tools knob (off by default) ────────────────────────
+TOOLY_TURNS = TURNS + [
+    {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "shell", "arguments": "{}"}}]},
+    {"role": "tool", "name": "shell", "content": "secret-output"},
+]
+
+
+def test_tool_turns_excluded_by_default():
+    p, fr = _provider()
+    p.on_session_end(TOOLY_TURNS)
+    sent = json.loads(fr.calls[0][2])
+    assert all(m["role"] != "tool" for m in sent)
+    assert not any("secret-output" in m["content"] for m in sent)
+    # The bare tool-call assistant row is also dropped (it had no text).
+    assert len(sent) == len(TURNS)
+
+
+def test_tool_turns_included_when_opted_in():
+    p, fr = _provider(config={"include_tools": True})
+    p.on_session_end(TOOLY_TURNS)
+    sent = json.loads(fr.calls[0][2])
+    assert any(m["role"] == "tool" for m in sent)
+
+
+# ── release check: manifests track the package version ──────────────────
+def test_plugin_manifests_match_package_version():
+    import re
+    from pathlib import Path
+
+    import xtrace_cli
+
+    root = Path(xtrace_cli.__file__).parent / "integrations" / "hermes"
+    for manifest in (root / "hermes_plugin" / "plugin.yaml",
+                     root / "hermes_provider" / "plugin.yaml"):
+        m = re.search(r"^version:\s*(\S+)", manifest.read_text(), re.M)
+        assert m, f"no version in {manifest}"
+        assert m.group(1) == xtrace_cli.__version__, (
+            f"{manifest.name} says {m.group(1)}, package is {xtrace_cli.__version__}"
+        )
+
+
 # ── provider: registration & setup ───────────────────────────────────────
 def test_register_captures_provider():
     class Ctx:
