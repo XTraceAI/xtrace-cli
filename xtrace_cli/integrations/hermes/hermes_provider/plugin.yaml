@@ -1,0 +1,13 @@
+name: xtrace
+version: 0.1.0
+# Memory providers are "exclusive": loaded by hermes' plugins/memory discovery
+# when selected via `memory.provider: xtrace`, not by the general plugin loader.
+kind: exclusive
+description: >-
+  XTrace hosted memory as Hermes' external memory provider — automatic
+  per-turn context prefetch, automatic session ingest at boundaries
+  (session end, pre-compression, shutdown), plus the xmem_search and
+  xmem_recall tools. Shells out to the xmem CLI. Occupies the single
+  external memory-provider slot; for the additive tools-only mode use the
+  xmem plugin instead (`xmem hermes install-plugin`).
+author: XTrace

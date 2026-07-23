@@ -20,6 +20,7 @@ from . import session_ingest as si
 
 _HERE = Path(__file__).parent
 _BUNDLED_PLUGIN = _HERE / "hermes_plugin"
+_BUNDLED_PROVIDER = _HERE / "hermes_provider"
 _BUNDLED_SKILL = _HERE / "skill"
 
 hermes_app = typer.Typer(help="Nous Research hermes-agent integration.", no_args_is_help=True)
@@ -160,6 +161,37 @@ def install_plugin(
     typer.secho(f"Installed xmem plugin → {plugin_target}", fg=typer.colors.GREEN)
     typer.echo("Hermes auto-discovers plugins under ~/.hermes/plugins on next start.")
     typer.echo("Ensure the `xmem` CLI is on PATH and `xmem config set --api-key <xtk_…>` is done.")
+
+
+@hermes_app.command("install-provider")
+def install_provider(
+    dest: Optional[Path] = typer.Option(None, "--dest", help="Plugins dir (default ~/.hermes/plugins)."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing install."),
+) -> None:
+    """Install XTrace as Hermes' external memory provider (full-backend mode).
+
+    Copies the bundled provider to ``~/.hermes/plugins/xtrace/``. Unlike the
+    additive plugin, the provider prefetches context into every turn and
+    ingests the session automatically at boundaries — but it occupies Hermes'
+    single external memory-provider slot. Activate with ``memory.provider:
+    xtrace`` in ``~/.hermes/config.yaml`` (or ``hermes memory``).
+    """
+    home = si.hermes_home()
+    plugins_dir = dest or home / "plugins"
+    _copy_tree(_BUNDLED_PROVIDER, plugins_dir / "xtrace", force, label="provider")
+
+    typer.secho(f"Installed xtrace memory provider → {plugins_dir / 'xtrace'}", fg=typer.colors.GREEN)
+    typer.echo("Activate it:  add to ~/.hermes/config.yaml:\n"
+               "  memory:\n"
+               "    provider: xtrace\n"
+               "then restart hermes. Requires `xmem` on PATH with a configured key.")
+    if (plugins_dir / "xmem").exists():
+        typer.secho(
+            "Note: the additive xmem tools plugin is also installed. The provider "
+            "registers the same xmem_search/xmem_recall tools — disable the plugin "
+            "(`hermes plugins disable xmem`) to avoid duplicates.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 def _copy_tree(src: Path, target: Path, force: bool, *, label: str) -> None:

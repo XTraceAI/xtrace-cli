@@ -1,8 +1,13 @@
 # Hermes ↔ XTrace memory
 
 Wiring [Nous Research hermes-agent](https://github.com/nousresearch/hermes-agent)
-to XTrace hosted memory via the `xmem` CLI. Three integration points; all use
-Hermes' **supported** extension points — no core patch.
+to XTrace hosted memory via the `xmem` CLI. All integration points use Hermes'
+**supported** extension mechanisms — no core patch. Two modes:
+
+| Mode | Install | Recall | Capture | Slot |
+|---|---|---|---|---|
+| **Additive** (plugin + skill) | `xmem hermes install-plugin` | model-invoked tools | manual (`xmem hermes ingest`, cron/hook) | none — coexists with Honcho/Mem0/etc. |
+| **Provider** (full backend) | `xmem hermes install-provider` | automatic per-turn prefetch + the same tools | automatic at session boundaries | occupies Hermes' single external memory-provider slot |
 
 Prereqs on the Hermes host:
 ```bash
@@ -39,7 +44,41 @@ skill** nudges the model to call `xmem_recall` before risky tool actions and
 `xmem_search` when it needs context.
 
 This is the **additive** path: it doesn't take Hermes' single external
-memory-provider slot, so it coexists with Honcho/Mem0/etc.
+memory-provider slot, so it coexists with Honcho/Mem0/etc. Hermes ≥0.19 also
+requires an explicit `hermes plugins enable xmem` after install.
+
+## Provider mode (full backend)
+
+```bash
+xmem hermes install-provider          # → ~/.hermes/plugins/xtrace/
+# ~/.hermes/config.yaml:
+#   memory:
+#     provider: xtrace
+```
+
+Implements Hermes' `MemoryProvider` ABC (`agent/memory_provider.py`),
+registered via `ctx.register_memory_provider(...)` and activated by the
+`memory.provider` config key. What it wires:
+
+| Hook | What XTrace does with it |
+|---|---|
+| `prefetch(query)` | `xmem search` injected into **every** turn, unasked (mode knob: `retrieve` fast / `compose` richer) |
+| `sync_turn(…, messages)` | keeps the latest transcript snapshot (no network) |
+| `on_session_end(messages)` | ingests the full session — no cron/hook/wrapper needed |
+| `on_pre_compress(messages)` | ingests turns about to be discarded by context compression |
+| `on_session_switch` / `shutdown` | flushes the old conversation on `/reset`-style switches and on crash-ish exits |
+| `get_tool_schemas()` | still exposes `xmem_search` / `xmem_recall` |
+
+Ingest is idempotent per `conv_id` (= the Hermes session id) with a
+fingerprint guard, so boundary flushes never double-post an unchanged
+transcript. Handlers shell out to `xmem` — same zero-dependency install story
+as the plugin. Knobs under `memory.xtrace:` in config.yaml — `prefetch`,
+`prefetch_mode`, `auto_ingest`, `namespace`.
+
+Trade-off: the external-provider slot is **exclusive** — pick this mode when
+XTrace is the memory backend; pick the additive plugin to coexist with another
+provider. Don't run both (duplicate tool names); `hermes plugins disable xmem`
+when switching to provider mode.
 
 ### How it maps onto Hermes internals
 
@@ -50,12 +89,6 @@ memory-provider slot, so it coexists with Honcho/Mem0/etc.
 
 ## Alternatives (documented, not shipped)
 
-- **Auto per-turn injection** — implement a `MemoryProvider` whose
-  `prefetch(query)` shells to `xmem search` so results inject into *every* turn
-  without the model asking (`agent/memory_provider.py`,
-  `agent/turn_context.py`). Trade-off: the external-provider slot is
-  **exclusive** — conflicts with an existing provider. Prefer the plugin unless
-  you want unconditional prefetch and run no other provider.
 - **Deterministic pre-tool recall** — register `tool_request` middleware
   (`hermes_cli/middleware.py`) to run `xmem recall` and inject directives into a
   tool's args before it executes. Hermes' `pre_tool_call` hook is block/approve
@@ -66,5 +99,7 @@ memory-provider slot, so it coexists with Honcho/Mem0/etc.
 
 ## Uninstall
 ```bash
-rm -rf ~/.hermes/plugins/xmem ~/.hermes/skills/xmem
+rm -rf ~/.hermes/plugins/xmem ~/.hermes/skills/xmem    # additive mode
+rm -rf ~/.hermes/plugins/xtrace                         # provider mode
+# and drop `memory.provider: xtrace` from ~/.hermes/config.yaml
 ```

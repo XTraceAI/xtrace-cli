@@ -65,10 +65,19 @@ minutes ingesting the latest, or a wrapper around `hermes`:
 
 ## 4. In-loop — recall & search during a run
 
+Two modes — pick one:
+
+- **Additive plugin** (this section): model-callable tools; coexists with any
+  other memory provider; capture stays manual (step 3).
+- **Provider mode** (step 4b): XTrace as Hermes' memory backend — automatic
+  per-turn prefetch and automatic session ingest; occupies Hermes' single
+  external memory-provider slot.
+
 Install the Hermes plugin (adds two model-callable tools + a skill):
 
 ```bash
 xmem hermes install-plugin               # → ~/.hermes/plugins/xmem/  (+ skill)
+hermes plugins enable xmem               # Hermes ≥0.19 requires explicit enable
 # restart hermes so it discovers the plugin
 ```
 
@@ -79,8 +88,40 @@ The agent now has:
 
 The bundled `xtrace-memory` skill tells the model when to call them. Both handlers
 shell out to `xmem`, so the plugin needs the CLI on PATH and a configured key
-(step 2). See `xtrace_cli/integrations/hermes/README.md` for the MemoryProvider /
-middleware / MCP alternatives.
+(step 2). See `xtrace_cli/integrations/hermes/README.md` for the middleware /
+MCP alternatives.
+
+## 4b. Provider mode — XTrace as the memory backend
+
+Instead of (not alongside) the additive plugin:
+
+```bash
+hermes plugins disable xmem              # if the additive plugin was installed
+xmem hermes install-provider             # → ~/.hermes/plugins/xtrace/
+```
+
+Then activate it in `~/.hermes/config.yaml` and restart hermes:
+
+```yaml
+memory:
+  provider: xtrace
+```
+
+What changes vs. the plugin:
+
+- **Recall is automatic** — relevant memories are prefetched into every turn;
+  the model can still call `xmem_search` / `xmem_recall` explicitly.
+- **Capture is automatic** — the session is ingested at its boundaries
+  (session end, pre-compression, resets, shutdown). Step 3's cron/wrapper is
+  unnecessary; `conv_id` = the Hermes session id, idempotently.
+- **The slot is exclusive** — this displaces any other external memory
+  provider (Honcho, Mem0, …). Hermes' built-in local memory is separate and
+  unaffected.
+
+Optional knobs under `memory.xtrace:` — `prefetch: false` (tools only),
+`prefetch_mode: compose` (richer, slower than the default `retrieve`),
+`auto_ingest: false` (recall only), `namespace: <ctx>` (override the xmem
+config default).
 
 ## 5. Verify the loop
 
@@ -100,13 +141,16 @@ xmem recall --tool Edit --arg file_path=<a file from the session> \
 | `No API key configured` | run `xmem config set --api-key xtk_…` or set `XTRACE_API_KEY` |
 | `401` on any call | key/org mismatch — confirm the `xtk_` key matches the base URL's env |
 | `A scope is required` | pass `--user-id` (or set a config default) |
-| `xmem_search`/`xmem_recall` missing in Hermes | plugin not discovered — confirm `~/.hermes/plugins/xmem/` exists and restart hermes |
+| `xmem_search`/`xmem_recall` missing in Hermes | plugin not discovered/enabled — confirm `~/.hermes/plugins/xmem/` exists, run `hermes plugins enable xmem`, restart hermes |
+| provider not active (`hermes memory` shows another/builtin) | `memory.provider: xtrace` missing from config.yaml, or `~/.hermes/plugins/xtrace/` not installed |
+| duplicate xmem tools | both plugin and provider installed — `hermes plugins disable xmem` in provider mode |
 | plugin tools return "xmem CLI not found" | the CLI isn't on the PATH Hermes runs with — install it in the same env |
 | `Hermes state DB not found` | pass `--db <path>` or set `HERMES_HOME` |
 
 ## 7. Uninstall
 
 ```bash
-rm -rf ~/.hermes/plugins/xmem ~/.hermes/skills/xmem   # remove the in-loop tools
+rm -rf ~/.hermes/plugins/xmem ~/.hermes/skills/xmem   # additive mode
+rm -rf ~/.hermes/plugins/xtrace                        # provider mode (+ drop memory.provider from config.yaml)
 pip uninstall xtrace-cli                               # remove the CLI
 ```
