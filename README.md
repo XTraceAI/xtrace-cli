@@ -22,7 +22,7 @@ pip install "xtrace-cli @ git+https://github.com/XTraceAI/xtrace-cli.git"
 ## Configure
 
 ```bash
-xmem config set --api-key xtk_… --base-url https://api.staging.xtrace.ai --user-id alice
+xmem config set --api-key xtk_… --user-id alice   # base URL defaults to production
 xmem config show     # API key masked
 ```
 

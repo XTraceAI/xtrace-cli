@@ -7,7 +7,7 @@
 #
 # The org is derived server-side from the key — do NOT send an org id.
 
-base_url: https://api.staging.xtrace.ai      # memory API base URL
+base_url: https://api.production.xtrace.ai   # memory API base URL (staging: https://api.staging.xtrace.ai)
 api_key: xtk_replace_me                      # org API key (starts with xtk_)
 user_id: alice                               # default user scope
 namespace: my-repo                           # default working context (repo / customer / service)

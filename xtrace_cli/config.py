@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 # Staging memory API. Override with ``XTRACE_BASE_URL`` or ``xmem config set``.
-DEFAULT_BASE_URL = "https://api.staging.xtrace.ai"
+DEFAULT_BASE_URL = "https://api.production.xtrace.ai"  # override for staging via --base-url / XTRACE_BASE_URL
 
 # field name -> environment variable that overrides it
 _ENV = {

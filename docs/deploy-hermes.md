@@ -9,7 +9,7 @@ memory as its memory backend, via the `xmem` CLI. ~10 minutes.
 - hermes-agent installed and working (`hermes` on PATH, `~/.hermes/` present).
 - Python 3.10+.
 - An XTrace org **API key** (starts with `xtk_`) and the memory API base URL
-  (staging: `https://api.staging.xtrace.ai`).
+  (the CLI defaults to production; staging: `https://api.staging.xtrace.ai`).
 
 ## 1. Install the CLI
 
@@ -23,7 +23,6 @@ xmem --version
 ```bash
 xmem config set \
   --api-key   xtk_your_key \
-  --base-url  https://api.staging.xtrace.ai \
   --user-id   <the user these memories belong to> \
   --namespace <repo / customer / service this deployment works in>
 xmem config show          # api key is masked
