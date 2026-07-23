@@ -51,7 +51,8 @@ def test_ingest_payload_and_path():
             group_ids=["g1"],
         )
     assert seen["method"] == "POST"
-    assert seen["path"] == "/v1/memories/"
+    # No trailing slash — the server 307s "/v1/memories/" with an empty body.
+    assert seen["path"] == "/v1/memories"
     body = seen["body"]
     assert body["user_id"] == "alice"
     assert body["conv_id"] == "conv-1"
@@ -94,7 +95,7 @@ def test_list_uses_query_params():
     with _client(handler) as c:
         c.list_memories(user_id="alice", type="fact", limit=5)
     assert seen["method"] == "GET"
-    assert seen["path"] == "/v1/memories/"
+    assert seen["path"] == "/v1/memories"
     assert seen["query"] == {"user_id": "alice", "type": "fact", "limit": "5"}
 
 
@@ -118,3 +119,15 @@ def test_error_envelope_is_raised():
             c.search("q", user_id="alice")
     assert ei.value.status_code == 422
     assert "no scope" in str(ei.value)
+
+
+def test_redirect_is_an_error_not_silent_success():
+    """307-with-empty-body (the trailing-slash trap) must raise, never return ''."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(307, headers={"location": "http://api.example.test/v1/memories"})
+
+    with pytest.raises(XTraceAPIError) as ei:
+        with _client(handler) as c:
+            c.ingest(messages=[{"role": "user", "content": "hi"}], user_id="a", conv_id="c")
+    assert ei.value.status_code == 307
+    assert "redirect" in str(ei.value)

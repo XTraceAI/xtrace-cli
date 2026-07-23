@@ -74,6 +74,15 @@ class XTraceClient:
             body: Any = resp.json()
         except ValueError:
             body = resp.text
+        if 300 <= resp.status_code < 400:
+            # The server 307s trailing-slash paths with an EMPTY body (and a
+            # Location that downgrades to http). Treating that as success made
+            # ingest/list silent no-ops — always surface redirects as errors.
+            raise XTraceAPIError(
+                resp.status_code,
+                {"error": {"message": f"unexpected redirect to {resp.headers.get('location')}"}},
+                method, url,
+            )
         if resp.status_code >= 400:
             raise XTraceAPIError(resp.status_code, body, method, url)
         return body
@@ -116,7 +125,7 @@ class XTraceClient:
             payload["group_ids"] = list(group_ids)
         if timestamp_format:
             payload["timestamp_format"] = timestamp_format
-        return self._request("POST", "/", json=payload)
+        return self._request("POST", "", json=payload)
 
     # ── 2. poll job ──────────────────────────────────────────────────────
     def get_job(self, job_id: str) -> Any:
@@ -210,7 +219,7 @@ class XTraceClient:
             params["limit"] = limit
         if cursor:
             params["cursor"] = cursor
-        return self._request("GET", "/", params=params)
+        return self._request("GET", "", params=params)
 
     # ── 6. get one ───────────────────────────────────────────────────────
     def get_memory(self, memory_id: str) -> Any:
