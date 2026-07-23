@@ -13,9 +13,33 @@ import json
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 XMEM_BIN = "xmem"
+
+
+def _fallback_candidates() -> list[Path]:
+    """Where ``xmem`` lands when PATH doesn't have it — GUI-launched Hermes
+    (desktop app) gets launchd's bare PATH, not the shell profile's."""
+    home = Path.home()
+    return [
+        home / ".local" / "bin" / XMEM_BIN,   # uv tool / pipx default
+        Path("/usr/local/bin") / XMEM_BIN,
+        Path("/opt/homebrew/bin") / XMEM_BIN,
+    ]
+
+
+def resolve_xmem() -> Optional[str]:
+    """Absolute path to the ``xmem`` binary, or None. PATH first, then
+    well-known install locations."""
+    found = shutil.which(XMEM_BIN)
+    if found:
+        return found
+    for c in _fallback_candidates():
+        if c.is_file():
+            return str(c)
+    return None
 
 SEARCH_TIMEOUT = 20.0   # prefetch/tool search — MemoryManager also enforces its own
 RECALL_TIMEOUT = 20.0
@@ -231,11 +255,16 @@ class ProviderCore:
     def _run(
         self, cmd: Sequence[str], *, timeout: float, stdin_text: Optional[str] = None,
     ) -> tuple[bool, str]:
-        if self._runner is None and shutil.which(XMEM_BIN) is None:
-            return False, (
-                "xmem CLI not found on PATH — `pip install xtrace-cli` and "
-                "`xmem config set --api-key <xtk_…>`."
-            )
+        if self._runner is None:
+            xmem = resolve_xmem()
+            if xmem is None:
+                return False, (
+                    "xmem CLI not found on PATH — `pip install xtrace-cli` and "
+                    "`xmem config set --api-key <xtk_…>`."
+                )
+            # Substitute the resolved absolute path so GUI-launched Hermes
+            # (bare launchd PATH) can still exec the binary.
+            cmd = [xmem, *cmd[1:]]
         run_fn: Runner = self._runner or _default_runner
         try:
             code, out, err = run_fn(cmd, timeout, stdin_text)

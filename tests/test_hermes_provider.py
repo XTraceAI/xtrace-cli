@@ -132,6 +132,41 @@ def test_core_never_raises():
     assert not ok and "xmem call failed" in detail
 
 
+# ── binary resolution (GUI-launched Hermes has a bare PATH) ──────────────
+def test_resolve_xmem_falls_back_to_known_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(core_mod.shutil, "which", lambda _: None)
+    fake = tmp_path / "xmem"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(core_mod, "_fallback_candidates", lambda: [fake])
+    assert core_mod.resolve_xmem() == str(fake)
+    monkeypatch.setattr(core_mod, "_fallback_candidates", lambda: [tmp_path / "missing"])
+    assert core_mod.resolve_xmem() is None
+
+
+def test_run_substitutes_resolved_binary(tmp_path, monkeypatch):
+    fake = tmp_path / "xmem"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(core_mod, "resolve_xmem", lambda: str(fake))
+    seen = {}
+
+    def spy(cmd, timeout, stdin_text):
+        seen["cmd0"] = cmd[0]
+        return 0, "{}", ""
+
+    monkeypatch.setattr(core_mod, "_default_runner", spy)
+    core = core_mod.ProviderCore()  # no injected runner → resolution path
+    ok, _ = core.search("q")
+    assert ok and seen["cmd0"] == str(fake)
+
+
+def test_is_available_uses_resolver(monkeypatch):
+    p = prov.XTraceMemoryProvider(config={})
+    monkeypatch.setattr(prov.core_mod, "resolve_xmem", lambda: "/x/xmem")
+    assert p.is_available() is True
+    monkeypatch.setattr(prov.core_mod, "resolve_xmem", lambda: None)
+    assert p.is_available() is False
+
+
 # ── provider: prefetch & tools ───────────────────────────────────────────
 def _provider(*responses, config=None):
     core, fr = _core(*responses)

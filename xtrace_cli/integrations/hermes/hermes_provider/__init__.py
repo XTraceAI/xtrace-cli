@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -157,9 +156,10 @@ class XTraceMemoryProvider(MemoryProvider):
         return "xtrace"
 
     def is_available(self) -> bool:
-        """xmem CLI on PATH. No network, per the ABC contract; a missing or
+        """xmem CLI resolvable (PATH or well-known install dirs — GUI-launched
+        Hermes has a bare PATH). No network, per the ABC contract; a missing or
         unconfigured key surfaces as a friendly tool/prefetch message instead."""
-        return shutil.which(core_mod.XMEM_BIN) is not None
+        return core_mod.resolve_xmem() is not None
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def initialize(self, session_id: str, **kwargs) -> None:

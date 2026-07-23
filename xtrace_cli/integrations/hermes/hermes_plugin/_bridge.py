@@ -11,9 +11,33 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 XMEM_BIN = "xmem"
+
+
+def _fallback_candidates() -> list[Path]:
+    """Where ``xmem`` lands when PATH doesn't have it — GUI-launched Hermes
+    (desktop app) gets launchd's bare PATH, not the shell profile's."""
+    home = Path.home()
+    return [
+        home / ".local" / "bin" / XMEM_BIN,   # uv tool / pipx default
+        Path("/usr/local/bin") / XMEM_BIN,
+        Path("/opt/homebrew/bin") / XMEM_BIN,
+    ]
+
+
+def resolve_xmem() -> Optional[str]:
+    """Absolute path to the ``xmem`` binary, or None. PATH first, then
+    well-known install locations."""
+    found = shutil.which(XMEM_BIN)
+    if found:
+        return found
+    for c in _fallback_candidates():
+        if c.is_file():
+            return str(c)
+    return None
 
 # runner(cmd, timeout) -> (returncode, stdout, stderr)
 Runner = Callable[[Sequence[str], float], tuple[int, str, str]]
@@ -71,10 +95,13 @@ def format_payload(payload: Any) -> str:
 def run(cmd: Sequence[str], *, runner: Optional[Runner] = None, timeout: float = 30.0) -> str:
     """Execute an ``xmem`` command and return formatted text (or a friendly
     error string — handlers should never raise into the agent loop)."""
-    use_default = runner is None
-    if use_default and shutil.which(XMEM_BIN) is None:
-        return ("xmem CLI not found on PATH — `pip install xtrace-cli` and "
-                "`xmem config set --api-key <xtk_…>`.")
+    if runner is None:
+        xmem = resolve_xmem()
+        if xmem is None:
+            return ("xmem CLI not found on PATH — `pip install xtrace-cli` and "
+                    "`xmem config set --api-key <xtk_…>`.")
+        # Absolute path so GUI-launched Hermes (bare launchd PATH) can exec it.
+        cmd = [xmem, *list(cmd)[1:]]
     run_fn: Runner = runner or _default_runner
     try:
         code, out, err = run_fn(cmd, timeout)
