@@ -124,6 +124,55 @@ calls/results — **off by default** since 0.2.1 because tool I/O often carries
 secrets; opt in for deeper procedural recall), `namespace: <ctx>` (override
 the xmem config default).
 
+## 4c. Docker — surviving container recreation
+
+For Hermes deployments that run in Docker (rebuilt from scratch on every
+restart), put each piece on the side of the rebuild line where it survives:
+the CLI and provider in the **image** (reinstalled automatically by every
+build), settings in **environment variables** (injected by your deployment
+config), nothing precious in the running container.
+
+Add to your image's Dockerfile:
+
+```dockerfile
+COPY xtrace_cli-0.2.1-py3-none-any.whl /tmp/
+RUN pip install --no-cache-dir /tmp/xtrace_cli-0.2.1-py3-none-any.whl \
+ && rm /tmp/xtrace_cli-0.2.1-py3-none-any.whl
+
+# after switching to your non-root user (e.g. USER hermes):
+RUN xmem hermes install-provider
+```
+
+If `~/.hermes` is a **mounted volume**, the provider baked at build time is
+shadowed by the mount at runtime — reinstall idempotently at startup (it
+copies three small files) by adding to your entrypoint:
+
+```bash
+xmem hermes install-provider --force
+```
+
+Configuration — no config file, env vars only (set in compose/orchestrator):
+
+| Variable | Value |
+|---|---|
+| `XTRACE_API_KEY` | the org key (from your secret store) |
+| `XTRACE_USER_ID` | user these memories belong to |
+| `XTRACE_NAMESPACE` | working context |
+| `XTRACE_BASE_URL` | only to override the production default |
+
+Verify after any rebuild (both should succeed as your non-root user):
+
+```bash
+xmem search "anything" --mode retrieve   # 200 (results or none) = auth + env OK
+ls ~/.hermes/plugins/xtrace              # provider present where Hermes looks
+```
+
+This recipe is verified end-to-end: built on `python:3.12-slim` as a
+non-root `hermes` user, env-only config, live capture + recall from inside
+the container, then full teardown (containers and image deleted), rebuild
+from the recipe alone, and recall proven again — including the
+volume-shadow case.
+
 ## 5. Verify the loop
 
 ```bash
