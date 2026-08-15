@@ -5,6 +5,12 @@ verbatim into ``~/.hermes/plugins/xtrace/``. The provider ``__init__`` wraps
 this in Hermes' ``MemoryProvider`` ABC; everything here shells out to the
 ``xmem`` CLI, so the installed provider has no Python dependency on this
 package (mirrors ``hermes_plugin/_bridge.py``, plus ingest + stdin support).
+
+Capture assurance (0.2.2, from the customer field study): "accepted" is
+never reported as stored. Ingest submits, then polls the job to a TERMINAL
+state; only terminal success commits the dedup digest and reports "stored".
+Anything else (terminal failure, still-pending at deadline, transport error)
+lands in a durable receipt with the payload stashed in the on-disk outbox.
 """
 
 from __future__ import annotations
@@ -13,8 +19,20 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
+
+try:
+    from . import _receipts as receipts_mod
+except ImportError:  # pragma: no cover - defensive for odd loaders
+    import importlib.util as _ilu
+    import pathlib as _pl
+
+    _rp = _pl.Path(__file__).with_name("_receipts.py")
+    _rspec = _ilu.spec_from_file_location("_xtrace_receipts", _rp)
+    receipts_mod = _ilu.module_from_spec(_rspec)
+    _rspec.loader.exec_module(receipts_mod)  # type: ignore[union-attr]
 
 XMEM_BIN = "xmem"
 
@@ -186,17 +204,48 @@ def _default_runner(cmd: Sequence[str], timeout: float, stdin_text: Optional[str
     return p.returncode, p.stdout, p.stderr
 
 
+def build_job_cmd(job_id: str) -> list[str]:
+    return [XMEM_BIN, "job", job_id, "--json"]
+
+
 class ProviderCore:
     """Stateful glue: search/recall/ingest via the ``xmem`` CLI, with a
-    per-conversation fingerprint so boundary flushes (session end, pre-compress,
-    shutdown) don't re-POST an unchanged transcript. Thread-safe; never raises.
+    per-conversation stored-digest so boundary flushes (session end,
+    pre-compress, shutdown) don't re-POST an unchanged transcript.
+    Thread-safe; never raises.
+
+    ``ingest`` returns ``(state, detail)`` with state one of:
+    ``stored`` (proven terminal success — the ONLY state that commits the
+    dedup digest), ``pending`` (accepted, unproven at deadline), ``failed``,
+    ``skipped`` (empty or unchanged-since-last-STORED).
     """
 
-    def __init__(self, *, runner: Optional[Runner] = None, namespace: Optional[str] = None):
+    def __init__(
+        self,
+        *,
+        runner: Optional[Runner] = None,
+        namespace: Optional[str] = None,
+        receipts: Optional["receipts_mod.ReceiptStore"] = None,
+        poll_interval: float = 2.0,
+        poll_deadline: float = 60.0,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self._runner = runner
         self._namespace = namespace
+        self._receipts = receipts
+        self._poll_interval = poll_interval
+        self._poll_deadline = poll_deadline
+        self._sleep = sleep
         self._lock = threading.Lock()
-        self._last_fp: dict[str, tuple[int, int]] = {}
+        self._last_digest: dict[str, str] = {}
+        if receipts is not None:
+            # Cross-restart dedup: seed from the durable ledger.
+            self._last_digest.update(receipts.last_stored_digests())
+
+    def attach_receipts(self, receipts: "receipts_mod.ReceiptStore") -> None:
+        with self._lock:
+            self._receipts = receipts
+            self._last_digest.update(receipts.last_stored_digests())
 
     # ── read side ────────────────────────────────────────────────────────
     def search(self, query: str, *, mode: str = "compose") -> tuple[bool, str]:
@@ -223,42 +272,159 @@ class ProviderCore:
         *,
         include_system: bool = False,
         include_tools: bool = True,
-    ) -> tuple[bool, str]:
-        """Map and POST a transcript under ``conv_id``. Returns (ok, detail).
-
-        Skips (ok=True) when the mapped transcript is empty or identical to the
-        last successful ingest for this conv_id. The fingerprint is only
-        committed AFTER a successful run, so a failed flush retries next time.
-        """
+    ) -> tuple[str, str]:
+        """Map, POST, and poll to a terminal state. Returns (state, detail)."""
         if not conv_id:
-            return False, "no conv_id"
+            return "failed", "no conv_id"
         mapped = map_messages(
             messages, include_system=include_system, include_tools=include_tools,
         )
         if not mapped:
-            return True, "nothing to ingest"
-        fp = _fingerprint(mapped)
+            return "skipped", "nothing to ingest"
+        digest = receipts_mod.payload_digest(mapped)
         with self._lock:
-            if self._last_fp.get(conv_id) == fp:
-                return True, "unchanged since last ingest"
-        payload = json.dumps(mapped)
-        ok, detail = self._run(
+            if self._last_digest.get(conv_id) == digest:
+                return "skipped", "unchanged since last stored ingest"
+        return self._submit(mapped, conv_id, digest)
+
+    def _submit(self, mapped: list[dict], conv_id: str, digest: str) -> tuple[str, str]:
+        turns = len(mapped)
+        ok, payload, err = self._run_json(
             build_ingest_cmd(conv_id, namespace=self._namespace),
-            timeout=INGEST_TIMEOUT, stdin_text=payload,
+            timeout=INGEST_TIMEOUT, stdin_text=json.dumps(mapped),
         )
-        if ok:
+        if not ok:
+            return self._settle("failed", conv_id, digest, mapped, turns, None, err)
+        state, job_id, detail = receipts_mod.classify_response(payload)
+        if state == "pending" and job_id:
+            state, detail = self._poll_to_terminal(job_id)
+        return self._settle(state, conv_id, digest, mapped, turns, job_id, detail)
+
+    def _poll_to_terminal(self, job_id: str) -> tuple[str, str]:
+        deadline = time.monotonic() + self._poll_deadline
+        while time.monotonic() < deadline:
+            self._sleep(self._poll_interval)
+            ok, payload, err = self._run_json(build_job_cmd(job_id), timeout=SEARCH_TIMEOUT)
+            if not ok:
+                # Transient poll error — keep trying until the deadline.
+                continue
+            state, _jid, detail = receipts_mod.classify_response(payload)
+            if state != "pending":
+                return state, detail
+        return "pending", f"job {job_id} not terminal after {self._poll_deadline:.0f}s"
+
+    def _settle(
+        self,
+        state: str,
+        conv_id: str,
+        digest: str,
+        mapped: list[dict],
+        turns: int,
+        job_id: Optional[str],
+        detail: str,
+    ) -> tuple[str, str]:
+        """Commit digests, receipts, and outbox according to the final state.
+        The digest is committed ONLY on proven storage."""
+        if state == "stored":
             with self._lock:
-                self._last_fp[conv_id] = fp
-            detail = f"ingested {len(mapped)} turns"
-        return ok, detail
+                self._last_digest[conv_id] = digest
+            detail = f"stored {turns} turns" + (f" (job {job_id})" if job_id else "")
+            if self._receipts:
+                self._receipts.record(conv_id=conv_id, digest=digest, status="stored",
+                                      turns=turns, job_id=job_id, detail=detail)
+                self._receipts.clear_payload(conv_id, digest)
+        else:
+            detail = detail or f"{state} with no detail"
+            if self._receipts:
+                self._receipts.record(conv_id=conv_id, digest=digest, status=state,
+                                      turns=turns, job_id=job_id, detail=detail)
+                self._receipts.stash_payload(conv_id, digest, mapped)
+        return state, detail
+
+    # ── reconciliation (next-start recovery of unproven work) ────────────
+    def reconcile(self, *, max_resubmits: int = 5) -> dict[str, int]:
+        """Resolve unproven submissions from the durable ledger: poll pending
+        jobs to terminal state; resubmit failed payloads from the outbox
+        (bounded). Returns counters for logging."""
+        counts = {"recovered": 0, "still_pending": 0, "failed": 0, "resubmitted": 0}
+        if not self._receipts:
+            return counts
+        pending_jobs = {
+            (r.get("conv_id"), r.get("digest")): r
+            for r in self._receipts.unresolved() if r.get("status") == "pending" and r.get("job_id")
+        }
+        for (conv_id, digest), rec in pending_jobs.items():
+            ok, payload, _err = self._run_json(build_job_cmd(rec["job_id"]), timeout=SEARCH_TIMEOUT)
+            if not ok:
+                counts["still_pending"] += 1
+                continue
+            state, _jid, detail = receipts_mod.classify_response(payload)
+            if state == "stored":
+                with self._lock:
+                    self._last_digest[conv_id] = digest
+                self._receipts.record(conv_id=conv_id, digest=digest, status="stored",
+                                      job_id=rec["job_id"], detail="recovered by reconcile")
+                self._receipts.clear_payload(conv_id, digest)
+                counts["recovered"] += 1
+            elif state == "failed":
+                self._receipts.record(conv_id=conv_id, digest=digest, status="failed",
+                                      job_id=rec["job_id"], detail=detail or "failed on reconcile")
+                counts["failed"] += 1
+            else:
+                counts["still_pending"] += 1
+        resub = 0
+        for item in self._receipts.outbox_payloads():
+            conv_id, digest = item.get("conv_id"), item.get("digest")
+            if not conv_id or (conv_id, digest) in pending_jobs:
+                continue  # pending jobs were handled above; don't double-send
+            with self._lock:
+                if self._last_digest.get(conv_id) == digest:
+                    self._receipts.clear_payload(conv_id, digest)
+                    continue
+            if resub >= max_resubmits:
+                break
+            state, _detail = self._submit(item.get("messages") or [], conv_id, digest)
+            resub += 1
+            if state == "stored":
+                counts["recovered"] += 1
+        counts["resubmitted"] = resub
+        return counts
+
+    def unconfirmed_count(self) -> int:
+        return len(self._receipts.unresolved()) if self._receipts else 0
 
     def invalidate(self, conv_id: str) -> None:
-        """Forget the fingerprint (e.g. after a transcript rewind) so the next
-        flush re-ingests even if lengths happen to match."""
+        """Forget the stored digest (e.g. after a transcript rewind) so the
+        next flush re-ingests even if content happens to match."""
         with self._lock:
-            self._last_fp.pop(conv_id, None)
+            self._last_digest.pop(conv_id, None)
 
     # ── plumbing ─────────────────────────────────────────────────────────
+    def _run_json(
+        self, cmd: Sequence[str], *, timeout: float, stdin_text: Optional[str] = None,
+    ) -> tuple[bool, Any, str]:
+        """Like ``_run`` but hands back the parsed JSON body (or None) so the
+        caller can inspect job status — exit code 0 alone proves nothing."""
+        if self._runner is None:
+            xmem = resolve_xmem()
+            if xmem is None:
+                return False, None, "xmem CLI not found on PATH"
+            cmd = [xmem, *cmd[1:]]
+        run_fn: Runner = self._runner or _default_runner
+        try:
+            code, out, err = run_fn(cmd, timeout, stdin_text)
+        except Exception as e:  # noqa: BLE001 — never propagate into the agent
+            return False, None, f"xmem call failed: {type(e).__name__}: {e}"
+        if code != 0:
+            return False, None, f"xmem error: {(err or out).strip() or 'exit ' + str(code)}"
+        out = (out or "").strip()
+        if not out:
+            return True, None, ""
+        try:
+            return True, json.loads(out), ""
+        except ValueError:
+            return True, None, ""
+
     def _run(
         self, cmd: Sequence[str], *, timeout: float, stdin_text: Optional[str] = None,
     ) -> tuple[bool, str]:
@@ -288,9 +454,3 @@ class ProviderCore:
             return True, out
 
 
-def _fingerprint(mapped: Sequence[dict]) -> tuple[int, int]:
-    """Cheap identity for a mapped transcript: (turn count, content hash)."""
-    h = 0
-    for m in mapped:
-        h = hash((h, m.get("role"), m.get("content")))
-    return len(mapped), h

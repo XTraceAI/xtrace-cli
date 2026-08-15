@@ -82,8 +82,8 @@ def test_map_messages_parts_and_junk():
 # ── ProviderCore.ingest ──────────────────────────────────────────────────
 def test_ingest_posts_mapped_json_on_stdin():
     core, fr = _core()
-    ok, detail = core.ingest(TURNS, "sess-1")
-    assert ok and detail == "ingested 2 turns"
+    state, detail = core.ingest(TURNS, "sess-1")
+    assert state == "stored" and detail.startswith("stored 2 turns")
     cmd, _timeout, stdin = fr.calls[0]
     assert cmd[cmd.index("--conv-id") + 1] == "sess-1"
     assert json.loads(stdin) == TURNS
@@ -91,28 +91,28 @@ def test_ingest_posts_mapped_json_on_stdin():
 
 def test_ingest_dedupes_unchanged_transcript():
     core, fr = _core()
-    assert core.ingest(TURNS, "s")[0]
-    ok, detail = core.ingest(TURNS, "s")
-    assert ok and detail == "unchanged since last ingest"
+    assert core.ingest(TURNS, "s")[0] == "stored"
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "skipped" and detail == "unchanged since last stored ingest"
     assert len(fr.calls) == 1
     # A longer transcript re-ingests.
-    assert core.ingest(TURNS + [{"role": "user", "content": "more"}], "s")[0]
+    assert core.ingest(TURNS + [{"role": "user", "content": "more"}], "s")[0] == "stored"
     assert len(fr.calls) == 2
 
 
 def test_ingest_failure_does_not_commit_fingerprint():
     core, fr = _core((1, "", "boom"))
-    ok, detail = core.ingest(TURNS, "s")
-    assert not ok and "boom" in detail
-    ok, detail = core.ingest(TURNS, "s")  # retry after failure must NOT dedupe
-    assert ok and detail == "ingested 2 turns"
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "failed" and "boom" in detail
+    state, detail = core.ingest(TURNS, "s")  # retry after failure must NOT dedupe
+    assert state == "stored" and detail.startswith("stored 2 turns")
     assert len(fr.calls) == 2
 
 
 def test_ingest_skips_empty_and_missing_conv():
     core, fr = _core()
-    assert core.ingest([{"role": "user", "content": ""}], "s") == (True, "nothing to ingest")
-    assert core.ingest(TURNS, "")[0] is False
+    assert core.ingest([{"role": "user", "content": ""}], "s") == ("skipped", "nothing to ingest")
+    assert core.ingest(TURNS, "")[0] == "failed"
     assert fr.calls == []
 
 
@@ -120,7 +120,7 @@ def test_invalidate_forces_reingest():
     core, fr = _core()
     core.ingest(TURNS, "s")
     core.invalidate("s")
-    assert core.ingest(TURNS, "s")[1] == "ingested 2 turns"
+    assert core.ingest(TURNS, "s")[0] == "stored"
     assert len(fr.calls) == 2
 
 
@@ -128,8 +128,8 @@ def test_core_never_raises():
     def boom(cmd, t, s):
         raise RuntimeError("nope")
     core = core_mod.ProviderCore(runner=boom)
-    ok, detail = core.ingest(TURNS, "s")
-    assert not ok and "xmem call failed" in detail
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "failed" and "xmem call failed" in detail
 
 
 # ── binary resolution (GUI-launched Hermes has a bare PATH) ──────────────
@@ -453,3 +453,150 @@ def test_install_provider_refuses_overwrite_without_force(tmp_path):
     assert runner.invoke(app, ["hermes", "install-provider", "--dest", str(tmp_path)]).exit_code == 1
     res = runner.invoke(app, ["hermes", "install-provider", "--dest", str(tmp_path), "--force"])
     assert res.exit_code == 0
+
+
+# ── 0.2.2 capture assurance: terminal-state machine ──────────────────────
+from xtrace_cli.integrations.hermes.hermes_provider import _receipts as rc  # noqa: E402
+
+PENDING = (0, json.dumps({"job_id": "job_1", "status": "pending"}), "")
+COMPLETED = (0, json.dumps({"job_id": "job_1", "status": "completed"}), "")
+JOB_FAILED = (0, json.dumps({"job_id": "job_1", "status": "failed", "error": "extract blew up"}), "")
+
+
+class RepeatRunner(FakeRunner):
+    """Repeats the last queued response forever once the queue drains."""
+
+    def __call__(self, cmd, timeout, stdin_text):
+        if len(self._responses) == 1:
+            self._responses.append(self._responses[0])
+        return super().__call__(cmd, timeout, stdin_text)
+
+
+def _fast_core(*responses, receipts=None, runner_cls=None):
+    fr = (runner_cls or FakeRunner)(*responses)
+    core = core_mod.ProviderCore(runner=fr, receipts=receipts,
+                                 poll_interval=0, poll_deadline=0.05,
+                                 sleep=lambda s: None)
+    return core, fr
+
+
+def test_classify_response_accepts_live_id_key():
+    """The live envelope uses "id", not "job_id" — both must poll."""
+    state, job_id, _ = rc.classify_response({"object": "job", "id": "job_9", "status": "pending"})
+    assert state == "pending" and job_id == "job_9"
+
+
+def test_classify_response_states():
+    assert rc.classify_response({"job_id": "j", "status": "pending"})[0] == "pending"
+    assert rc.classify_response({"job_id": "j", "status": "completed"})[0] == "stored"
+    assert rc.classify_response({"status": "failed", "error": "x"}) == ("failed", None, "x")
+    assert rc.classify_response({"ok": True})[0] == "stored"
+    assert rc.classify_response(None)[0] == "stored"
+
+
+def test_accepted_is_not_stored_polls_job_to_terminal():
+    core, fr = _fast_core(PENDING, PENDING, COMPLETED)
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "stored"
+    assert "job job_1" in detail
+    # Second and third calls hit the job endpoint, not ingest.
+    assert fr.calls[1][0][:2] == ["xmem", "job"]
+    # Terminal success committed the digest → identical transcript skips.
+    assert core.ingest(TURNS, "s")[0] == "skipped"
+
+
+def test_job_terminal_failure_is_failed_and_retries():
+    core, fr = _fast_core(PENDING, JOB_FAILED)
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "failed" and "extract blew up" in detail
+    # Digest NOT committed — the same transcript resubmits.
+    assert core.ingest(TURNS, "s")[0] == "stored"
+
+
+def test_pending_at_deadline_never_claims_stored():
+    core, fr = _fast_core(PENDING, runner_cls=RepeatRunner)
+    state, detail = core.ingest(TURNS, "s")
+    assert state == "pending" and "job_1" in detail
+    assert core._last_digest.get("s") is None  # unproven → no dedup commit
+
+
+def test_exit_zero_with_failed_body_is_failed():
+    """Pearl's synthetic case: process exit 0, JSON body says failed."""
+    core, fr = _fast_core((0, json.dumps({"status": "failed"}), ""))
+    state, _ = core.ingest(TURNS, "s")
+    assert state == "failed"
+    assert core.ingest(TURNS, "s")[0] == "stored"  # not suppressed as unchanged
+
+
+# ── 0.2.2: receipts, outbox, reconcile ───────────────────────────────────
+def test_failed_ingest_writes_receipt_and_outbox(tmp_path):
+    store = rc.ReceiptStore(tmp_path)
+    core, _ = _fast_core((1, "", "http 403"), receipts=store)
+    core.ingest(TURNS, "conv-a")
+    recs = store.records()
+    assert recs[-1]["status"] == "failed" and "403" in recs[-1]["detail"]
+    payloads = store.outbox_payloads()
+    assert len(payloads) == 1 and payloads[0]["conv_id"] == "conv-a"
+    assert core.unconfirmed_count() == 1
+
+
+def test_reconcile_resubmits_failed_payloads(tmp_path):
+    store = rc.ReceiptStore(tmp_path)
+    core, _ = _fast_core((1, "", "http 403"), receipts=store)
+    core.ingest(TURNS, "conv-a")
+    # New process: fresh core, same store; next send succeeds.
+    core2, fr2 = _fast_core(receipts=store)
+    counts = core2.reconcile()
+    assert counts["resubmitted"] == 1 and counts["recovered"] == 1
+    assert store.unresolved() == []
+    assert store.outbox_payloads() == []
+    assert core2.unconfirmed_count() == 0
+
+
+def test_reconcile_polls_pending_jobs_without_resend(tmp_path):
+    store = rc.ReceiptStore(tmp_path)
+    core, _ = _fast_core(PENDING, receipts=store, runner_cls=RepeatRunner)
+    assert core.ingest(TURNS, "conv-a")[0] == "pending"
+    core2, fr2 = _fast_core(COMPLETED, receipts=store)
+    counts = core2.reconcile()
+    assert counts["recovered"] == 1 and counts["resubmitted"] == 0
+    assert fr2.calls[0][0][:2] == ["xmem", "job"]  # polled, did not re-ingest
+    # Recovered digest now dedupes.
+    assert core2.ingest(TURNS, "conv-a")[0] == "skipped"
+
+
+def test_stored_digest_survives_restart(tmp_path):
+    store = rc.ReceiptStore(tmp_path)
+    core, _ = _fast_core(receipts=store)
+    assert core.ingest(TURNS, "conv-a")[0] == "stored"
+    core2, fr2 = _fast_core(receipts=store)          # "new process"
+    assert core2.ingest(TURNS, "conv-a")[0] == "skipped"
+    assert fr2.calls == []
+
+
+def test_payload_digest_is_deterministic():
+    a = rc.payload_digest(TURNS)
+    assert a == rc.payload_digest(list(TURNS))
+    assert a != rc.payload_digest(TURNS + [{"role": "user", "content": "x"}])
+    assert len(a) == 64
+
+
+# ── 0.2.2: visible failure path ──────────────────────────────────────────
+def test_prompt_block_surfaces_unconfirmed_captures(tmp_path):
+    store = rc.ReceiptStore(tmp_path)
+    core, _ = _fast_core((1, "", "boom"), receipts=store)
+    p = prov.XTraceMemoryProvider(config={}, core=core)
+    p.initialize("s1")
+    p.on_session_end(TURNS)
+    assert "1 earlier session capture(s) are unconfirmed" in p.system_prompt_block()
+
+
+def test_receipts_command(tmp_path):
+    res = runner.invoke(app, ["hermes", "receipts", "--dir", str(tmp_path)])
+    assert res.exit_code == 0 and "No receipts" in res.output
+    store = rc.ReceiptStore(tmp_path)
+    store.record(conv_id="c1", digest="d" * 64, status="failed", detail="http 403")
+    store.record(conv_id="c2", digest="e" * 64, status="stored", detail="stored 2 turns")
+    res = runner.invoke(app, ["hermes", "receipts", "--dir", str(tmp_path)])
+    assert res.exit_code == 0
+    assert "1 unresolved" in res.output and "1 failed" in res.output

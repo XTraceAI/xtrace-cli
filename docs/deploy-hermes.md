@@ -110,9 +110,15 @@ What changes vs. the plugin:
 
 - **Recall is automatic** — relevant memories are prefetched into every turn;
   the model can still call `xmem_search` / `xmem_recall` explicitly.
-- **Capture is automatic** — the session is ingested at its boundaries
-  (session end, pre-compression, resets, shutdown). Step 3's cron/wrapper is
-  unnecessary; `conv_id` = the Hermes session id, idempotently.
+- **Capture is automatic and PROVEN** — the session is ingested at its
+  boundaries (session end, pre-compression, resets, shutdown), and since
+  0.2.2 the provider polls each submission to a terminal state: "stored" is
+  only reported (and deduplication only committed) after the server proves
+  storage. Anything unproven lands in a durable receipt + on-disk outbox
+  (`~/.hermes/xtrace/`) and is recovered on the next start. Inspect with
+  `xmem hermes receipts` (add `--flush` to reconcile now); unconfirmed
+  captures are also surfaced to the agent so the user hears about failures
+  instead of finding warning lines in a log.
 - **The slot is exclusive** — this displaces any other external memory
   provider (Honcho, Mem0, …). Hermes' built-in local memory is separate and
   unaffected.

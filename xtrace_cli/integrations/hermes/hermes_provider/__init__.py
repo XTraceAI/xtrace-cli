@@ -21,6 +21,8 @@ live under ``memory.xtrace`` in config.yaml:
 - ``auto_ingest`` (default true)      — flush transcripts at session boundaries
 - ``include_tools`` (default false)   — also ingest tool calls/results (opt in;
   tool output often carries secrets, but it is where procedural lessons live)
+- ``reconcile`` (default true)        — on start, poll unproven jobs and
+  resubmit failed captures from the on-disk outbox (``$HERMES_HOME/xtrace``)
 - ``namespace`` (default unset)       — override the xmem config namespace
 """
 
@@ -144,6 +146,8 @@ class XTraceMemoryProvider(MemoryProvider):
         self._prefetch_enabled = _coerce_bool(cfg.get("prefetch"), True)
         self._prefetch_mode = str(cfg.get("prefetch_mode") or "retrieve")
         self._auto_ingest = _coerce_bool(cfg.get("auto_ingest"), True)
+        self._reconcile_on_start = _coerce_bool(cfg.get("reconcile"), True)
+        self._unconfirmed = 0
         # Off by default since 0.2.1: tool output often carries secrets/PII.
         # Opt in (memory.xtrace.include_tools: true) for procedural recall depth.
         self._include_tools = _coerce_bool(cfg.get("include_tools"), False)
@@ -175,9 +179,37 @@ class XTraceMemoryProvider(MemoryProvider):
         # Cron/flush/subagent contexts must not write user memories.
         agent_context = str(kwargs.get("agent_context") or "primary")
         self._writes_enabled = agent_context == "primary"
+        hermes_home = kwargs.get("hermes_home")
+        if hermes_home and self._writes_enabled:
+            try:
+                store = core_mod.receipts_mod.ReceiptStore(Path(hermes_home) / "xtrace")
+                self._core.attach_receipts(store)
+                self._refresh_unconfirmed()
+                if self._reconcile_on_start:
+                    t = threading.Thread(target=self._reconcile, daemon=True,
+                                         name="xtrace-reconcile")
+                    self._bg_threads.append(t)
+                    t.start()
+            except Exception:  # pragma: no cover - receipts must never break init
+                logger.exception("xtrace receipts init failed")
+
+    def _reconcile(self) -> None:
+        try:
+            counts = self._core.reconcile()
+            if any(counts.values()):
+                logger.info("xtrace reconcile: %s", counts)
+        except Exception:  # pragma: no cover
+            logger.exception("xtrace reconcile failed")
+        self._refresh_unconfirmed()
+
+    def _refresh_unconfirmed(self) -> None:
+        try:
+            self._unconfirmed = self._core.unconfirmed_count()
+        except Exception:  # pragma: no cover
+            self._unconfirmed = 0
 
     def system_prompt_block(self) -> str:
-        return (
+        block = (
             "# XTrace memory\n"
             "Long-term memory is active. Relevant facts and past decisions are "
             "injected automatically each turn; the session is captured back to "
@@ -186,6 +218,15 @@ class XTraceMemoryProvider(MemoryProvider):
             "call xmem_recall to surface lessons and procedures past sessions "
             "recorded about the exact files or symbols you're about to touch."
         )
+        if self._unconfirmed:
+            # Field-study finding: failures must be visible, not log-only.
+            # This puts the fact in front of the user via the agent itself.
+            block += (
+                f"\nNOTE: {self._unconfirmed} earlier session capture(s) are "
+                "unconfirmed (failed or still unproven). If the user asks about "
+                "memory reliability, tell them; details: `xmem hermes receipts`."
+            )
+        return block
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Synchronous recall — MemoryManager runs external prefetch in its own
@@ -302,9 +343,11 @@ class XTraceMemoryProvider(MemoryProvider):
         include_tools = self._include_tools
 
         def work() -> None:
-            ok, detail = self._core.ingest(msgs, conv_id, include_tools=include_tools)
-            log = logger.info if ok else logger.warning
-            log("xtrace ingest (%s): %s", conv_id, detail)
+            state, detail = self._core.ingest(msgs, conv_id, include_tools=include_tools)
+            log = {"stored": logger.info, "skipped": logger.info,
+                   "pending": logger.warning}.get(state, logger.error)
+            log("xtrace capture (%s): %s — %s", conv_id, state, detail)
+            self._refresh_unconfirmed()
 
         if wait:
             work()

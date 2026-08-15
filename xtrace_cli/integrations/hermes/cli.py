@@ -163,6 +163,45 @@ def install_plugin(
     typer.echo("Ensure the `xmem` CLI is on PATH and `xmem config set --api-key <xtk_…>` is done.")
 
 
+@hermes_app.command("receipts")
+def receipts(
+    base: Optional[Path] = typer.Option(None, "--dir", help="Receipts dir (default ~/.hermes/xtrace)."),
+    limit: int = typer.Option(15, "--limit", "-n", help="Recent records to show."),
+    flush: bool = typer.Option(False, "--flush", help="Reconcile now: poll pending jobs, resubmit failed payloads."),
+) -> None:
+    """Capture receipts — the durable record of what the Hermes provider
+    actually stored, and what is still unproven or failed."""
+    from .hermes_provider import _provider_core as pc
+    from .hermes_provider import _receipts as rc
+
+    store = rc.ReceiptStore(base or si.hermes_home() / "xtrace")
+    if flush:
+        core = pc.ProviderCore(receipts=store)
+        counts = core.reconcile()
+        typer.secho(
+            f"reconcile: recovered={counts['recovered']} resubmitted={counts['resubmitted']} "
+            f"still_pending={counts['still_pending']} failed={counts['failed']}",
+            fg=typer.colors.GREEN if not counts["failed"] else typer.colors.YELLOW,
+        )
+    records = store.records()
+    unresolved = store.unresolved()
+    if not records:
+        typer.echo(f"No receipts at {store.receipts_path} — no captures recorded yet.")
+        return
+    for r in records[-limit:]:
+        mark = {"stored": "✓", "skipped": "·", "pending": "?", "failed": "✗"}.get(r.get("status"), "?")
+        typer.echo(f"  {mark} {r.get('ts','')}  {r.get('conv_id','')}  "
+                   f"{r.get('status','')}  {r.get('detail','')[:60]}")
+    color = typer.colors.GREEN if not unresolved else typer.colors.RED
+    typer.secho(
+        f"{len(records)} receipt(s); {len(unresolved)} unresolved "
+        f"({sum(1 for r in unresolved if r.get('status') == 'failed')} failed, "
+        f"{sum(1 for r in unresolved if r.get('status') == 'pending')} pending). "
+        + ("" if not unresolved else "Run with --flush to reconcile."),
+        fg=color,
+    )
+
+
 @hermes_app.command("install-provider")
 def install_provider(
     dest: Optional[Path] = typer.Option(None, "--dest", help="Plugins dir (default ~/.hermes/plugins)."),

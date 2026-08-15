@@ -18,6 +18,14 @@ Mode = Literal["compose", "retrieve"]
 MemoryType = Literal["fact", "episode", "artifact", "lesson", "procedure"]
 
 
+def _user_agent() -> str:
+    try:
+        from xtrace_cli import __version__
+        return f"xmem/{__version__}"
+    except Exception:  # pragma: no cover - version must never break requests
+        return "xmem"
+
+
 class XTraceAPIError(Exception):
     """A non-2xx response from the memory API, with status and parsed body."""
 
@@ -65,6 +73,9 @@ class XTraceClient:
             "Authorization": f"Token {self._api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            # Identify ourselves: the default python-httpx UA is a stock
+            # target for edge/WAF bot rules (field-observed 403s at the CDN).
+            "User-Agent": _user_agent(),
         }
 
     def _request(self, method: str, path: str, **kw: Any) -> Any:

@@ -39,6 +39,20 @@ def test_auth_header_is_token_scheme():
     assert seen["auth"] == "Token xtk_secret"
 
 
+def test_user_agent_identifies_xmem():
+    """Default python-httpx UA is a stock WAF bot-rule target (field 403s)."""
+    import xtrace_cli
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["ua"] = request.headers.get("user-agent")
+        return httpx.Response(200, json={})
+
+    with _client(handler) as c:
+        c.get_memory("m1")
+    assert seen["ua"] == f"xmem/{xtrace_cli.__version__}"
+
+
 def test_ingest_payload_and_path():
     handler, seen = _capture()
     with _client(handler) as c:
