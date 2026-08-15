@@ -141,9 +141,9 @@ config), nothing precious in the running container.
 Add to your image's Dockerfile:
 
 ```dockerfile
-COPY xtrace_cli-0.2.1-py3-none-any.whl /tmp/
-RUN pip install --no-cache-dir /tmp/xtrace_cli-0.2.1-py3-none-any.whl \
- && rm /tmp/xtrace_cli-0.2.1-py3-none-any.whl
+COPY xtrace_cli-0.2.2-py3-none-any.whl /tmp/
+RUN pip install --no-cache-dir /tmp/xtrace_cli-0.2.2-py3-none-any.whl \
+ && rm /tmp/xtrace_cli-0.2.2-py3-none-any.whl
 
 # after switching to your non-root user (e.g. USER hermes):
 RUN xmem hermes install-provider
